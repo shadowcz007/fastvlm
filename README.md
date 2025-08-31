@@ -17,7 +17,7 @@ FastVLM 是一个基于 ONNX Runtime 的高性能视觉语言模型库，支持�
 
 ```toml
 [dependencies]
-fastvlm = { git = "https://github.com/your-username/fastvlm" }
+fastvlm = { git = "https://github.com/shadowcz007/fastvlm" }
 tokio = { version = "1", features = ["full"] }
 ```
 
