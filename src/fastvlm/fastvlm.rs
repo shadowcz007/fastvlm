@@ -138,6 +138,7 @@ impl FastVLM {
         })
     }
     
+    /// 同步分析图片（内部使用）
     pub fn analyze_frame_sync(
         &mut self,
         image_data: Vec<u8>,
@@ -176,6 +177,19 @@ impl FastVLM {
                       result.text);
         
         Ok(result)
+    }
+
+    /// 异步分析图片（推荐使用）
+    pub async fn analyze_frame(
+        &mut self,
+        image_data: Vec<u8>,
+        width: u32,
+        height: u32,
+        prompt: Option<String>,
+    ) -> Result<FastVLMAnalysisResult> {
+        // 直接调用同步版本，因为ONNX Runtime本身是线程安全的
+        // 如果需要真正的异步处理，可以在调用方使用spawn_blocking
+        self.analyze_frame_sync(image_data, width, height, prompt)
     }
     
     fn rgba_to_dynamic_image(&self, data: Vec<u8>, width: u32, height: u32) -> Result<DynamicImage> {

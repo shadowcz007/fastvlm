@@ -1,8 +1,6 @@
 use std::time::Instant;
 use anyhow::Result;
-use image::DynamicImage;
-
-mod fastvlm;
+use fastvlm::{FastVLMClient, FastVLMConfig};
 
 #[derive(Debug, Clone)]
 pub struct ImageAnalysisResult {
@@ -87,169 +85,57 @@ impl ProcessingStats {
 }
 
 struct FastVLMApp {
-    fastvlm: Option<fastvlm::FastVLM>,
+    client: FastVLMClient,
     llm_prompt: String,
-    llm_resolution_scale: f32,
     init_time: Option<std::time::Duration>,
 }
 
 impl FastVLMApp {
-    fn new() -> Result<Self> {
+    async fn new() -> Result<Self> {
         let init_start_time = Instant::now();
         println!("🔧 初始化 FastVLM...");
         
-        // 初始化 FastVLM
-        let fastvlm = Self::init_fastvlm();
-        let llm_enabled = fastvlm.is_some();
+        // 创建客户端
+        let mut client = FastVLMClient::new();
+        
+        // 配置模型
+        let config = FastVLMConfig {
+            max_response_length: 30,
+            default_prompt: "用中文描述这张图片的内容".to_string(),
+        };
+        
+        // 初始化模型
+        client.initialize(None, config).await?;
         
         let init_time = init_start_time.elapsed();
-        
-        if llm_enabled {
-            println!("✅ FastVLM 初始化成功！耗时: {:.2}秒", init_time.as_secs_f32());
-        } else {
-            println!("⚠️  FastVLM 初始化失败 - AI 功能已禁用 (耗时: {:.2}秒)", init_time.as_secs_f32());
-        }
+        println!("✅ FastVLM 初始化成功！耗时: {:.2}秒", init_time.as_secs_f32());
         
         Ok(Self {
-            fastvlm,
+            client,
             llm_prompt: "用中文描述这张图片的内容".to_string(),
-            llm_resolution_scale: 0.5, // 降低分辨率以提高处理速度
             init_time: Some(init_time),
         })
     }
     
-    fn init_fastvlm() -> Option<fastvlm::FastVLM> {
-        println!("🔍 搜索 FastVLM 模型...");
-        
-        // 获取系统标准模型目录
-        let system_model_dir = fastvlm::download::get_default_model_dir();
-        
-        let possible_paths = [
-            system_model_dir.as_path(),
-            std::path::Path::new("data/fastvlm"),
-            std::path::Path::new("../data/fastvlm"),
-            std::path::Path::new("../../data/fastvlm"),
-            std::path::Path::new("."),
-        ];
-        
-        // 首先检查模型是否存在于任何可能的路径中
-        let existing_dir = possible_paths.iter()
-            .find(|path| {
-                let exists = path.exists() && 
-                    path.join("tokenizer.json").exists() &&
-                    path.join("vision_encoder.onnx").exists() &&
-                    path.join("embed_tokens.onnx").exists() &&
-                    path.join("decoder_model_merged.onnx").exists();
-                
-                println!("🔍 检查路径 {:?}: {}", path, if exists { "✅ 找到所有模型" } else { "❌ 缺少模型" });
-                exists
-            })
-            .copied();
-            
-        let data_dir = if let Some(dir) = existing_dir {
-            println!("找到 FastVLM 数据目录: {:?}", dir);
-            dir.to_path_buf()
-        } else {
-            println!("📥 FastVLM 模型未找到，尝试自动下载...");
-            let download_dir = fastvlm::download::get_default_model_dir();
-            
-            let rt = tokio::runtime::Runtime::new().ok()?;
-            match rt.block_on(fastvlm::download::download_fastvlm_models(&download_dir)) {
-                Ok(_) => {
-                    println!("✅ FastVLM 模型下载成功到: {:?}", download_dir);
-                    download_dir
-                },
-                Err(e) => {
-                    println!("❌ 下载 FastVLM 模型失败: {}", e);
-                    return None;
-                }
-            }
-        };
-        
-        let config = fastvlm::FastVLMConfig::default();
-        match tokio::runtime::Runtime::new() {
-            Ok(rt) => {
-                match rt.block_on(fastvlm::FastVLM::new(&data_dir, config)) {
-                    Ok(fastvlm) => {
-                        println!("FastVLM 初始化成功");
-                        Some(fastvlm)
-                    },
-                    Err(e) => {
-                        println!("初始化 FastVLM 失败: {}", e);
-                        None
-                    }
-                }
-            },
-            Err(e) => {
-                println!("创建 tokio runtime 失败: {}", e);
-                None
-            }
-        }
-    }
-    
-    fn load_image(&self, image_path: &str) -> Result<DynamicImage> {
-        println!("📸 加载图片: {}", image_path);
-        let img = image::open(image_path)?;
-        println!("✅ 图片加载成功: {}x{}", img.width(), img.height());
-        Ok(img)
-    }
-    
-    fn resize_image(&self, img: &DynamicImage, target_width: u32, target_height: u32) -> DynamicImage {
-        img.resize(target_width, target_height, image::imageops::FilterType::Lanczos3)
-    }
-    
-    fn image_to_rgba_bytes(&self, img: &DynamicImage) -> Vec<u8> {
-        let rgba_img = img.to_rgba8();
-        let mut bytes = Vec::with_capacity((rgba_img.width() * rgba_img.height() * 4) as usize);
-        
-        for pixel in rgba_img.pixels() {
-            bytes.extend_from_slice(&[pixel[0], pixel[1], pixel[2], pixel[3]]);
-        }
-        
-        bytes
-    }
-    
-    fn analyze_image(&mut self, image_path: &str) -> Result<ImageAnalysisResult> {
+    async fn analyze_image(&mut self, image_path: &str) -> Result<ImageAnalysisResult> {
         let start_time = Instant::now();
         
-        // 加载图片
-        let img = self.load_image(image_path)?;
+        println!("📸 分析图片: {}", image_path);
         
-        // 调整图片大小以提高处理速度
-        let target_width = (img.width() as f32 * self.llm_resolution_scale) as u32;
-        let target_height = (img.height() as f32 * self.llm_resolution_scale) as u32;
-        let resized_img = self.resize_image(&img, target_width, target_height);
+        // 使用客户端分析图片
+        let result = self.client.analyze_image_file(image_path, Some(self.llm_prompt.clone())).await?;
         
-        println!("🔄 调整图片大小到: {}x{}", target_width, target_height);
+        let processing_time = start_time.elapsed();
+        println!("✅ 分析完成！耗时: {:.2}秒", processing_time.as_secs_f32());
         
-        // 转换为 RGBA 字节
-        let image_bytes = self.image_to_rgba_bytes(&resized_img);
-        
-        // 使用 FastVLM 分析
-        if let Some(ref mut fastvlm) = self.fastvlm {
-            println!("🤖 开始 AI 分析...");
-            match fastvlm.analyze_frame_sync(image_bytes, target_width, target_height, Some(self.llm_prompt.clone())) {
-                Ok(result) => {
-                    let processing_time = start_time.elapsed();
-                    println!("✅ 分析完成！耗时: {:.2}秒", processing_time.as_secs_f32());
-                    
-                    Ok(ImageAnalysisResult {
-                        text: result.text,
-                        processing_time,
-                        timestamp: Instant::now(),
-                    })
-                },
-                Err(e) => {
-                    println!("❌ AI 分析失败: {}", e);
-                    Err(anyhow::anyhow!("AI 分析失败: {}", e))
-                }
-            }
-        } else {
-            Err(anyhow::anyhow!("FastVLM 未初始化"))
-        }
+        Ok(ImageAnalysisResult {
+            text: result.text,
+            processing_time,
+            timestamp: Instant::now(),
+        })
     }
     
-    fn process_image_batch(&mut self, image_paths: &[String]) -> Result<()> {
+    async fn process_image_batch(&mut self, image_paths: &[String]) -> Result<()> {
         let batch_start_time = Instant::now();
         println!("🚀 开始批量处理 {} 张图片", image_paths.len());
         
@@ -259,7 +145,7 @@ impl FastVLMApp {
             println!("\n--- 处理第 {} 张图片: {} ---", i + 1, image_path);
             
             let image_start_time = Instant::now();
-            match self.analyze_image(image_path) {
+            match self.analyze_image(image_path).await {
                 Ok(result) => {
                     let image_processing_time = image_start_time.elapsed();
                     println!("📝 分析结果: {}", result.text);
@@ -294,7 +180,8 @@ impl FastVLMApp {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     env_logger::init();
     
     println!("🚀 启动 FastVLM - 图片 AI 分析工具");
@@ -309,7 +196,7 @@ fn main() -> Result<()> {
     }
     
     // 初始化应用
-    let mut app = FastVLMApp::new()?;
+    let mut app = FastVLMApp::new().await?;
     
     // 获取图片路径列表
     let image_paths: Vec<String> = args[1..].to_vec();
@@ -333,7 +220,7 @@ fn main() -> Result<()> {
     }
     
     // 处理图片
-    app.process_image_batch(&valid_paths)?;
+    app.process_image_batch(&valid_paths).await?;
     
     Ok(())
 }

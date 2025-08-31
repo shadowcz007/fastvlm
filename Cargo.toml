@@ -1,7 +1,20 @@
 [package]
 name = "fastvlm"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+description = "FastVLM - 高性能视觉语言模型库"
+license = "MIT"
+repository = "https://github.com/shadowcz007/fastvlm"
+keywords = ["ai", "vision", "language-model", "onnx", "fastvlm"]
+categories = ["artificial-intelligence", "multimedia"]
+
+[lib]
+name = "fastvlm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fastvlm-cli"
+path = "src/main.rs"
 
 [dependencies]
 # AI/ML dependencies
@@ -28,3 +41,6 @@ ort = { version = "2.0.0-rc.10", features = ["coreml"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "2.0.0-rc.10", features = ["cuda"] }
+
+[target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
+ort = { version = "2.0.0-rc.10" }
